@@ -1,0 +1,23 @@
+# This file describes a Fastly Compute@Edge package. To learn more visit:
+# https://developer.fastly.com/reference/fastly-toml/
+
+authors = ["Jim Rainville"]
+description = "Hack2021 project"
+language = "rust"
+manifest_version = 1
+name = "amy_and_the_geeks"
+service_id = "6gFC8Vz2xqfenM3XWFnPlz"
+
+[local_server]
+
+  [local_server.backends]
+    [local_server.backends.fastly_api_backend]
+        url = "https://api.fastly.com/"
+    [local_server.backends.pop_status_backend]
+        url = "https://service-scraper.edgecompute.app/"
+
+
+    [local_server.dictionaries]
+        [local_server.dictionaries.app_data]
+            file = "app_data.json"
+            format = "json"
