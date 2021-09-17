@@ -4,6 +4,7 @@ use fastly::http::{header, HeaderValue, Method, StatusCode};
 use fastly::{mime, Dictionary, Error, Request, Response};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::hash_map::RandomState;
 
 /// The name of a backend server associated with this service.
 ///
@@ -32,6 +33,7 @@ const STATUS_VALUES: &'static [&'static str] = &[
     "Maintenance",
     "Not Available",
 ];
+
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Coordinates {
@@ -106,10 +108,11 @@ fn main(mut req: Request) -> Result<Response, Error> {
         }
     };
 
+    let the_path = req.get_path();
     // Pattern match on the path.
-    match req.get_path() {
+    match the_path {
         // If request is to the `/` path, send a default response.
-        "/" => {
+        "/" | "/noscrape" => {
             let app_data_dict = Dictionary::open(APP_DATA_DICT);
 
             let pop_response = Request::new(Method::GET, FASTLY_API_DATACENTER_ENDPOINT)
@@ -120,21 +123,25 @@ fn main(mut req: Request) -> Result<Response, Error> {
             let body_str = pop_response.into_body_str();
             let pop_vec: Vec<PopData> = serde_json::from_str(&body_str).unwrap();
 
-            let status_response = Request::new(Method::GET, POP_STATUS_API_ENDPOINT)
-                .with_header(header::ACCEPT, "application/json")
-                .send(POP_STATUS_API_BACKEND_NAME)?;
+            let mut status_map : Option<HashMap<&str, &str>> = None;
+            let mut status_vec: Vec<StatusData>;
+            if the_path != "/noscrape" {
+                let status_response = Request::new(Method::GET, POP_STATUS_API_ENDPOINT)
+                    .with_header(header::ACCEPT, "application/json")
+                    .send(POP_STATUS_API_BACKEND_NAME)?;
 
-            println!("Status response: {:?}", status_response.get_status());
+                println!("Status response: {:?}", status_response.get_status());
 
-            let status_body_str = status_response.into_body_str();
-            // println!("Status body: {}", &status_body_str);
+                let status_body_str = status_response.into_body_str();
+                // println!("Status body: {}", &status_body_str);
 
-            let status_vec: Vec<StatusData> = serde_json::from_str(&status_body_str).unwrap();
+                status_vec = serde_json::from_str(&status_body_str).unwrap();
 
-            let status_map: HashMap<&str, &str> = status_vec
-                .iter()
-                .map(|status| (status.code.as_str(), status.status.as_str()))
-                .collect();
+                status_map = Some(status_vec
+                    .iter()
+                    .map(|status| (status.code.as_str(), status.status.as_str()))
+                    .collect());
+            }
 
             let modifed_pop_status = app_data_dict.get("modified_pop_status").unwrap();
             let modified_pop_status_vec: HashMap<&str, u8> =
@@ -187,7 +194,7 @@ fn main(mut req: Request) -> Result<Response, Error> {
 
 fn get_pop_status(
     pop_code: &str,
-    status_map: &HashMap<&str, &str>,
+    status_map: &Option<HashMap<&str, &str>>,
     modified_pop_status_vec: &HashMap<&str, u8>,
 ) -> String {
     if modified_pop_status_vec.contains_key("*") {
@@ -195,18 +202,26 @@ fn get_pop_status(
         if pc_index < STATUS_VALUES.len() as u8 {
             STATUS_VALUES[pc_index as usize].to_string()
         } else {
-            match status_map.get(pop_code) {
-                Some(status) => status.parse().unwrap(),
-                None => "Not Available".to_string(),
-            }
+            get_status_from_map(pop_code, status_map)
         }
     } else {
         match modified_pop_status_vec.get(pop_code) {
             Some(pc_index) => STATUS_VALUES[*pc_index as usize].to_string(),
-            None => match status_map.get(pop_code) {
-                Some(status) => status.parse().unwrap(),
-                None => "Not Available".to_string(),
-            },
+            None => get_status_from_map(pop_code, status_map),
         }
     }
 }
+
+
+fn get_status_from_map(pop_code: &str, status_map: &Option<HashMap<&str, &str>>) -> String {
+    match status_map {
+        Some(map) => {
+            match map.get(pop_code) {
+                Some(status) => status.parse().unwrap(),
+                None => "Not Available".to_string(),
+            }
+        },
+        None => "Not Available".to_string(),
+    }
+}
+
