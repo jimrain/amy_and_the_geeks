@@ -3,8 +3,8 @@
 use fastly::http::{header, HeaderValue, Method, StatusCode};
 use fastly::{mime, Dictionary, Error, Request, Response};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
+use std::collections::HashMap;
 
 /// The name of a backend server associated with this service.
 ///
@@ -35,7 +35,6 @@ const STATUS_VALUES: &'static [&'static str] = &[
     "Maintenance",
     "Not Available",
 ];
-
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Coordinates {
@@ -75,6 +74,14 @@ struct PopStatusData {
 struct PopStatusResponse {
     current_pop: String,
     pop_status_data: Vec<PopStatusData>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct DictionaryInfo {
+    dictionary_id: String,
+    service_id: String,
+    item_key: String,
+    item_value: String
 }
 
 /// The entry point for your application.
@@ -125,7 +132,7 @@ fn main(mut req: Request) -> Result<Response, Error> {
             let body_str = pop_response.into_body_str();
             let pop_vec: Vec<PopData> = serde_json::from_str(&body_str).unwrap();
 
-            let mut status_map : Option<HashMap<&str, &str>> = None;
+            let mut status_map: Option<HashMap<&str, &str>> = None;
             let mut status_vec: Vec<StatusData>;
             if the_path != "/noscrape" {
                 let status_response = Request::new(Method::GET, POP_STATUS_API_ENDPOINT)
@@ -139,10 +146,12 @@ fn main(mut req: Request) -> Result<Response, Error> {
 
                 status_vec = serde_json::from_str(&status_body_str).unwrap();
 
-                status_map = Some(status_vec
-                    .iter()
-                    .map(|status| (status.code.as_str(), status.status.as_str()))
-                    .collect());
+                status_map = Some(
+                    status_vec
+                        .iter()
+                        .map(|status| (status.code.as_str(), status.status.as_str()))
+                        .collect(),
+                );
             }
 
             let modifed_pop_status = app_data_dict.get("modified_pop_status").unwrap();
@@ -203,7 +212,8 @@ fn main(mut req: Request) -> Result<Response, Error> {
                     if status == "-" {
                         modified_pop_status_map.clear();
                     } else {
-                        modified_pop_status_map.insert("*".to_string(), status.parse::<u8>().unwrap());
+                        modified_pop_status_map
+                            .insert("*".to_string(), status.parse::<u8>().unwrap());
                     }
                 } else {
                     if status == "-" {
@@ -215,14 +225,31 @@ fn main(mut req: Request) -> Result<Response, Error> {
             }
             let dict_id = app_data_dict.get("dict_id").unwrap();
             // /service/service_id/dictionary/dictionary_id/item/dictionary_item_key
-            let the_url = format!("{}/service/{}/dictionary/{}/item/modified_pop_status", FASTLY_API_BASE, service_id, dict_id);
-            let the_body = format!("item_value={}", serde_json::to_string(&modified_pop_status_map)?);
-            Ok(Request::new(Method::PUT, the_url)
+            let the_url = format!(
+                "{}/service/{}/dictionary/{}/item/modified_pop_status",
+                FASTLY_API_BASE, service_id, dict_id
+            );
+            let the_body = format!(
+                "item_value={}",
+                serde_json::to_string(&modified_pop_status_map)?
+            );
+            let mut dict_api_response = Request::new(Method::PUT, the_url)
                 .with_header("Fastly-Key", FSLY_API_TOKEN)
                 .with_header(header::ACCEPT, "application/json")
                 .with_header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .with_body(the_body)
-                .send(FASTLY_API_BACKEND_NAME)?)
+                .send(FASTLY_API_BACKEND_NAME)?;
+
+            if dict_api_response.get_status() == StatusCode::OK {
+                let body_str = dict_api_response.into_body_str();
+                let dict_info: DictionaryInfo = serde_json::from_str(&body_str).unwrap();
+                Ok(Response::from_status(StatusCode::OK)
+                    .with_content_type(mime::APPLICATION_JSON)
+                    .with_body(dict_info.item_value))
+            } else {
+                Ok(Response::from_status(StatusCode::IM_A_TEAPOT)
+                    .with_body_text_plain("Problem mofifying dictionary\n"))
+            }
         }
 
         // Catch all other requests and return a 404.
@@ -251,16 +278,12 @@ fn get_pop_status(
     }
 }
 
-
 fn get_status_from_map(pop_code: &str, status_map: &Option<HashMap<&str, &str>>) -> String {
     match status_map {
-        Some(map) => {
-            match map.get(pop_code) {
-                Some(status) => status.parse().unwrap(),
-                None => "Not Available".to_string(),
-            }
+        Some(map) => match map.get(pop_code) {
+            Some(status) => status.parse().unwrap(),
+            None => "Not Available".to_string(),
         },
         None => "Not Available".to_string(),
     }
 }
-
