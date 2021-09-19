@@ -12,6 +12,8 @@ use std::collections::hash_map::RandomState;
 /// the Fastly WASM service UI for more information.
 const FASTLY_API_BACKEND_NAME: &str = "fastly_api_backend";
 
+const FASTLY_API_BASE: &str = "https://api.fastly.com";
+
 const FASTLY_API_DATACENTER_ENDPOINT: &str = "https://api.fastly.com/datacenters";
 
 /// The name of a second backend associated with this service.
@@ -95,7 +97,7 @@ fn main(mut req: Request) -> Result<Response, Error> {
     // Filter request methods...
     match req.get_method() {
         // Allow GET and HEAD requests.
-        &Method::GET | &Method::HEAD => (),
+        &Method::GET | &Method::HEAD | &Method::PUT => (),
 
         // Accept PURGE requests; it does not matter to which backend they are sent.
         m if m == "PURGE" => (),
@@ -108,13 +110,13 @@ fn main(mut req: Request) -> Result<Response, Error> {
         }
     };
 
+    let app_data_dict = Dictionary::open(APP_DATA_DICT);
     let the_path = req.get_path();
+    println!("Path: {}", the_path);
     // Pattern match on the path.
     match the_path {
         // If request is to the `/` path, send a default response.
         "/" | "/noscrape" => {
-            let app_data_dict = Dictionary::open(APP_DATA_DICT);
-
             let pop_response = Request::new(Method::GET, FASTLY_API_DATACENTER_ENDPOINT)
                 .with_header("Fastly-Key", FSLY_API_TOKEN)
                 .with_header(header::ACCEPT, "application/json")
@@ -184,6 +186,43 @@ fn main(mut req: Request) -> Result<Response, Error> {
                     &HeaderValue::from_static("*"),
                 )
                 .with_body(pop_status_json))
+        }
+
+        "/set_pop" => {
+            let service_id = std::env::var("FASTLY_SERVICE_ID").unwrap_or_else(|_| String::new());
+            // let version_num = std::env::var("FASTLY_SERVICE_VERSION").unwrap_or_else(|_| String::new());
+
+            let modifed_pop_status = app_data_dict.get("modified_pop_status").unwrap();
+            let mut modified_pop_status_map: HashMap<String, u8> =
+                serde_json::from_str(modifed_pop_status.as_str()).unwrap();
+
+            // JMR - assume there is always a query param - do I need to handle the error case?
+            let query_params: Vec<(String, String)> = req.get_query().unwrap();
+            for (pop, status) in query_params {
+                if pop == "*" {
+                    if status == "-" {
+                        modified_pop_status_map.clear();
+                    } else {
+                        modified_pop_status_map.insert("*".to_string(), status.parse::<u8>().unwrap());
+                    }
+                } else {
+                    if status == "-" {
+                        modified_pop_status_map.remove(pop.as_str());
+                    } else {
+                        modified_pop_status_map.insert(pop, status.parse::<u8>().unwrap());
+                    }
+                }
+            }
+            let dict_id = app_data_dict.get("dict_id").unwrap();
+            // /service/service_id/dictionary/dictionary_id/item/dictionary_item_key
+            let the_url = format!("{}/service/{}/dictionary/{}/item/modified_pop_status", FASTLY_API_BASE, service_id, dict_id);
+            let the_body = format!("item_value={}", serde_json::to_string(&modified_pop_status_map)?);
+            Ok(Request::new(Method::PUT, the_url)
+                .with_header("Fastly-Key", FSLY_API_TOKEN)
+                .with_header(header::ACCEPT, "application/json")
+                .with_header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .with_body(the_body)
+                .send(FASTLY_API_BACKEND_NAME)?)
         }
 
         // Catch all other requests and return a 404.
