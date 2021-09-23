@@ -81,7 +81,7 @@ struct DictionaryInfo {
     dictionary_id: String,
     service_id: String,
     item_key: String,
-    item_value: String
+    item_value: String,
 }
 
 /// The entry point for your application.
@@ -118,6 +118,10 @@ fn main(mut req: Request) -> Result<Response, Error> {
     };
 
     let app_data_dict = Dictionary::open(APP_DATA_DICT);
+    let service_id = std::env::var("FASTLY_SERVICE_ID").unwrap_or_else(|_| String::new());
+    // We need the dictionary id for API calls.
+    let dict_id = app_data_dict.get("dict_id").unwrap();
+
     let the_path = req.get_path();
     println!("Path: {}", the_path);
     // Pattern match on the path.
@@ -154,15 +158,22 @@ fn main(mut req: Request) -> Result<Response, Error> {
                 );
             }
 
-            let modifed_pop_status = app_data_dict.get("modified_pop_status").unwrap();
-            let modified_pop_status_vec: HashMap<&str, u8> =
-                serde_json::from_str(modifed_pop_status.as_str()).unwrap();
+            // let modified_pop_status = app_data_dict.get("modified_pop_status").unwrap();
+            let modified_pop_status_opt= get_modified_pop_status(&service_id, &dict_id);
+            if modified_pop_status_opt.is_none() {
+                return Ok(Response::from_status(StatusCode::IM_A_TEAPOT)
+                    .with_body_text_plain("Problem accessing API\n"));
+            }
+
+            let modified_pop_status= modified_pop_status_opt.unwrap();
+            let modified_pop_status_map: HashMap<&str, u8> =
+                serde_json::from_str(modified_pop_status.as_str()).unwrap();
 
             let pop_status_vec: Vec<PopStatusData> = pop_vec
                 .iter()
                 .map(|pop| {
                     let pop_code = pop.code.to_string();
-                    let status = get_pop_status(&pop_code, &status_map, &modified_pop_status_vec);
+                    let status = get_pop_status(&pop_code, &status_map, &modified_pop_status_map);
                     let shield = match &pop.shield {
                         Some(s) => s,
                         None => "",
@@ -186,7 +197,6 @@ fn main(mut req: Request) -> Result<Response, Error> {
             };
 
             let pop_status_json = serde_json::to_string(&pop_status_response)?;
-            // println!("Pop status vec: {}", pop_status_json);
 
             Ok(Response::from_status(StatusCode::OK)
                 .with_content_type(mime::APPLICATION_JSON)
@@ -198,24 +208,27 @@ fn main(mut req: Request) -> Result<Response, Error> {
         }
 
         "/set_pop" => {
-            let service_id = std::env::var("FASTLY_SERVICE_ID").unwrap_or_else(|_| String::new());
-            // let version_num = std::env::var("FASTLY_SERVICE_VERSION").unwrap_or_else(|_| String::new());
+            let mut modified_pop_status_opt= get_modified_pop_status(&service_id, &dict_id);
+            if modified_pop_status_opt.is_none() {
+                return Ok(Response::from_status(StatusCode::IM_A_TEAPOT)
+                    .with_body_text_plain("Problem accessing API\n"));
+            }
 
-            let modifed_pop_status = app_data_dict.get("modified_pop_status").unwrap();
+            let modified_pop_status= modified_pop_status_opt.unwrap();
             let mut modified_pop_status_map: HashMap<String, u8> =
-                serde_json::from_str(modifed_pop_status.as_str()).unwrap();
+                serde_json::from_str(modified_pop_status.as_str()).unwrap();
 
-            // JMR - assume there is always a query param - do I need to handle the error case?
             let query_params: Vec<(String, String)> = req.get_query().unwrap();
             println!("QP: {:?}", query_params);
 
             if query_params.is_empty() {
-                let response = Response::from_body(modifed_pop_status)
+                let response = Response::from_body(modified_pop_status)
                     .with_status(StatusCode::OK)
                     .with_content_type(mime::APPLICATION_JSON)
                     .with_header(
-                    &header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                    &HeaderValue::from_static("*"));
+                        &header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                        &HeaderValue::from_static("*"),
+                    );
                 return Ok(response);
             }
 
@@ -235,7 +248,7 @@ fn main(mut req: Request) -> Result<Response, Error> {
                     }
                 }
             }
-            let dict_id = app_data_dict.get("dict_id").unwrap();
+
             // /service/service_id/dictionary/dictionary_id/item/dictionary_item_key
             let the_url = format!(
                 "{}/service/{}/dictionary/{}/item/modified_pop_status",
@@ -258,8 +271,9 @@ fn main(mut req: Request) -> Result<Response, Error> {
                 Ok(Response::from_status(StatusCode::OK)
                     .with_content_type(mime::APPLICATION_JSON)
                     .with_header(
-                    &header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                    &HeaderValue::from_static("*"))
+                        &header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                        &HeaderValue::from_static("*"),
+                    )
                     .with_body(dict_info.item_value))
             } else {
                 Ok(Response::from_status(StatusCode::IM_A_TEAPOT)
@@ -300,5 +314,31 @@ fn get_status_from_map(pop_code: &str, status_map: &Option<HashMap<&str, &str>>)
             None => "Not Available".to_string(),
         },
         None => "Not Available".to_string(),
+    }
+}
+
+// This is calling the Fastly API to get the dictionary. You might ask why I'm not just accessing
+// it on the edge. Reason being to avoid a race where we read it on the edge then write it with the
+// API. Still not ideal as there could be a race with another pop but it will do until we have a
+// KV store
+fn get_modified_pop_status(service_id: &str, dict_id: &str) -> Option<String> {
+    let dict_item_url = format!(
+        "{}/service/{}/dictionary/{}/item/modified_pop_status",
+        FASTLY_API_BASE, service_id, dict_id
+    );
+    // let modified_pop_status = app_data_dict.get("modified_pop_status").unwrap();
+    let mut modified_pop_status_resp = Request::new(Method::GET, dict_item_url)
+        .with_header("Fastly-Key", FSLY_API_TOKEN)
+        .with_header(header::ACCEPT, "application/json")
+        .send(FASTLY_API_BACKEND_NAME).unwrap();
+
+    if modified_pop_status_resp.get_status() == StatusCode::OK {
+        let body_str = modified_pop_status_resp.into_body_str();
+        let dict_info: DictionaryInfo = serde_json::from_str(&body_str).unwrap();
+        let modified_pop_status = dict_info.item_value;
+        println!("MPS: {}", modified_pop_status);
+        Some(modified_pop_status)
+    } else {
+        None
     }
 }
