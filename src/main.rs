@@ -207,6 +207,18 @@ fn main(mut req: Request) -> Result<Response, Error> {
 
             // JMR - assume there is always a query param - do I need to handle the error case?
             let query_params: Vec<(String, String)> = req.get_query().unwrap();
+            println!("QP: {:?}", query_params);
+
+            if query_params.is_empty() {
+                let response = Response::from_body(modifed_pop_status)
+                    .with_status(StatusCode::OK)
+                    .with_content_type(mime::APPLICATION_JSON)
+                    .with_header(
+                    &header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    &HeaderValue::from_static("*"));
+                return Ok(response);
+            }
+
             for (pop, status) in query_params {
                 if pop == "*" {
                     if status == "-" {
@@ -245,6 +257,9 @@ fn main(mut req: Request) -> Result<Response, Error> {
                 let dict_info: DictionaryInfo = serde_json::from_str(&body_str).unwrap();
                 Ok(Response::from_status(StatusCode::OK)
                     .with_content_type(mime::APPLICATION_JSON)
+                    .with_header(
+                    &header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    &HeaderValue::from_static("*"))
                     .with_body(dict_info.item_value))
             } else {
                 Ok(Response::from_status(StatusCode::IM_A_TEAPOT)
