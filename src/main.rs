@@ -3,7 +3,6 @@
 use fastly::http::{header, HeaderValue, Method, StatusCode};
 use fastly::{mime, Dictionary, Error, Request, Response};
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 
 /// The name of a backend server associated with this service.
@@ -20,10 +19,6 @@ const FASTLY_API_DATACENTER_ENDPOINT: &str = "https://api.fastly.com/datacenters
 const POP_STATUS_API_BACKEND_NAME: &str = "pop_status_backend";
 
 const POP_STATUS_API_ENDPOINT: &str = "https://service-scraper.edgecompute.app/";
-
-// JMR - put this in an encrypted dictionary!
-// const FSLY_API_TOKEN: &str = "Y3woXFscylfKhZvGC3rS-1OJqp8HtZjs";
-const FSLY_API_TOKEN: &str = "ewhqN789jdp625r_DUgYaqjvuf6Cb6hP";
 
 const APP_DATA_DICT: &str = "app_data";
 
@@ -92,7 +87,7 @@ struct DictionaryInfo {
 ///
 /// If `main` returns an error, a 500 error response will be delivered to the client.
 #[fastly::main]
-fn main(mut req: Request) -> Result<Response, Error> {
+fn main(req: Request) -> Result<Response, Error> {
     println!(
         "Amy and the Geeks version:{}",
         std::env::var("FASTLY_SERVICE_VERSION").unwrap_or_else(|_| String::new())
@@ -122,6 +117,8 @@ fn main(mut req: Request) -> Result<Response, Error> {
     // We need the dictionary id for API calls.
     let dict_id = app_data_dict.get("dict_id").unwrap();
 
+    let fsly_api_token = app_data_dict.get("api_key").unwrap();
+
     let the_path = req.get_path();
     println!("Path: {}", the_path);
     // Pattern match on the path.
@@ -129,7 +126,7 @@ fn main(mut req: Request) -> Result<Response, Error> {
         // If request is to the `/` path, send a default response.
         "/" | "/noscrape" => {
             let pop_response = Request::new(Method::GET, FASTLY_API_DATACENTER_ENDPOINT)
-                .with_header("Fastly-Key", FSLY_API_TOKEN)
+                .with_header("Fastly-Key", &fsly_api_token)
                 .with_header(header::ACCEPT, "application/json")
                 .send(FASTLY_API_BACKEND_NAME)?;
 
@@ -137,7 +134,7 @@ fn main(mut req: Request) -> Result<Response, Error> {
             let pop_vec: Vec<PopData> = serde_json::from_str(&body_str).unwrap();
 
             let mut status_map: Option<HashMap<&str, &str>> = None;
-            let mut status_vec: Vec<StatusData>;
+            let status_vec: Vec<StatusData>;
             if the_path != "/noscrape" {
                 let status_response = Request::new(Method::GET, POP_STATUS_API_ENDPOINT)
                     .with_header(header::ACCEPT, "application/json")
@@ -159,7 +156,7 @@ fn main(mut req: Request) -> Result<Response, Error> {
             }
 
             // let modified_pop_status = app_data_dict.get("modified_pop_status").unwrap();
-            let modified_pop_status_opt= get_modified_pop_status(&service_id, &dict_id);
+            let modified_pop_status_opt= get_modified_pop_status(&service_id, &dict_id, &fsly_api_token);
             if modified_pop_status_opt.is_none() {
                 return Ok(Response::from_status(StatusCode::IM_A_TEAPOT)
                     .with_body_text_plain("Problem accessing API\n"));
@@ -208,7 +205,7 @@ fn main(mut req: Request) -> Result<Response, Error> {
         }
 
         "/set_pop" => {
-            let mut modified_pop_status_opt= get_modified_pop_status(&service_id, &dict_id);
+            let modified_pop_status_opt= get_modified_pop_status(&service_id, &dict_id, &fsly_api_token);
             if modified_pop_status_opt.is_none() {
                 return Ok(Response::from_status(StatusCode::IM_A_TEAPOT)
                     .with_body_text_plain("Problem accessing API\n"));
@@ -258,8 +255,8 @@ fn main(mut req: Request) -> Result<Response, Error> {
                 "item_value={}",
                 serde_json::to_string(&modified_pop_status_map)?
             );
-            let mut dict_api_response = Request::new(Method::PUT, the_url)
-                .with_header("Fastly-Key", FSLY_API_TOKEN)
+            let dict_api_response = Request::new(Method::PUT, the_url)
+                .with_header("Fastly-Key", fsly_api_token)
                 .with_header(header::ACCEPT, "application/json")
                 .with_header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .with_body(the_body)
@@ -321,14 +318,14 @@ fn get_status_from_map(pop_code: &str, status_map: &Option<HashMap<&str, &str>>)
 // it on the edge. Reason being to avoid a race where we read it on the edge then write it with the
 // API. Still not ideal as there could be a race with another pop but it will do until we have a
 // KV store
-fn get_modified_pop_status(service_id: &str, dict_id: &str) -> Option<String> {
+fn get_modified_pop_status(service_id: &str, dict_id: &str, api_token: &str) -> Option<String> {
     let dict_item_url = format!(
         "{}/service/{}/dictionary/{}/item/modified_pop_status",
         FASTLY_API_BASE, service_id, dict_id
     );
     // let modified_pop_status = app_data_dict.get("modified_pop_status").unwrap();
-    let mut modified_pop_status_resp = Request::new(Method::GET, dict_item_url)
-        .with_header("Fastly-Key", FSLY_API_TOKEN)
+    let modified_pop_status_resp = Request::new(Method::GET, dict_item_url)
+        .with_header("Fastly-Key", api_token)
         .with_header(header::ACCEPT, "application/json")
         .send(FASTLY_API_BACKEND_NAME).unwrap();
 
