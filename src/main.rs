@@ -22,7 +22,7 @@ const POP_STATUS_API_ENDPOINT: &str = "https://service-scraper.edgecompute.app/"
 
 const APP_DATA_DICT: &str = "app_data";
 
-const STATUS_VALUES: &'static [&'static str] = &[
+const STATUS_VALUES: &[&str] = &[
     "Operational",
     "Degraded Performance",
     "Partial Outage",
@@ -183,13 +183,13 @@ fn main(req: Request) -> Result<Response, Error> {
                         longitude: pop.coordinates.longitude,
                         group: pop.group.to_string(),
                         shield: shield.to_string(),
-                        status: status,
+                        status,
                     }
                 })
                 .collect();
 
             let pop_status_response: PopStatusResponse = PopStatusResponse {
-                current_pop: current_pop,
+                current_pop,
                 pop_status_data: pop_status_vec,
             };
 
